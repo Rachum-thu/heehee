@@ -4,7 +4,7 @@ import json
 import logging
 import asyncio
 from typing import Literal, List, Dict
-from chat_parallel import process_api_requests_from_file
+from toolkit.openai.chat_parallel import process_api_requests_from_file
 
 # Constants
 CACHE_DIR = '.cache'
@@ -34,9 +34,10 @@ def create_request_file(inputs: List[str], model_name: str, params: Dict) -> str
         {
             'model': model_name,
             'messages': [{'role': "user", 'content': input_text}],
+            'metadata': {"id": idx},
             **params
         }
-        for input_text in inputs
+        for idx, input_text in enumerate(inputs)
     ]
 
     with open(request_file, 'w') as f:
@@ -51,15 +52,18 @@ def read_responses(save_file: str) -> List[str]:
     with open(save_file, 'r') as f:
         for line in f:
             responses.append(json.loads(line))
-
+    # rank the response by response[2]['id']
+    responses.sort(key=lambda x: x[2]['id'])
     return [
-        response['choices'][0]['message']['content']
+        response[1]['choices'][0]['message']['content']
         for response in responses
     ]
 
 # Main Chat Function
 def chat(
     inputs: List[str],
+    half_usage=False,
+    clear_cache=False,
     model_name: Literal['gpt-4o', 'gpt-4o-mini'] = 'gpt-4o-mini',
     tier_list: Literal['tier1', 'tier2', 'tier3', 'tier4', 'tier5'] = 'tier4',
     **params
@@ -79,8 +83,8 @@ def chat(
             save_filepath=save_file,
             request_url="https://api.openai.com/v1/chat/completions",
             api_key=os.environ['OPENAI_API_KEY'],
-            max_requests_per_minute=RATE_LIMIT[tier_list][model_name]['PRM'],
-            max_tokens_per_minute=RATE_LIMIT[tier_list][model_name]['TPM'],
+            max_requests_per_minute=RATE_LIMIT[tier_list][model_name]['PRM'] // 2 if half_usage else RATE_LIMIT[tier_list][model_name]['PRM'],
+            max_tokens_per_minute=RATE_LIMIT[tier_list][model_name]['TPM'] // 2 if half_usage else RATE_LIMIT[tier_list][model_name]['TPM'],
             token_encoding_name='o200k_base',
             max_attempts=5,
             logging_level=logging.INFO
@@ -88,7 +92,11 @@ def chat(
     )
 
     # Extract and return responses
-    return read_responses(save_file)
+    results = read_responses(save_file)
+    if clear_cache:
+        os.remove(request_file)
+        os.remove(save_file)
+    return results
 
 # Entry Point
 if __name__ == '__main__':
